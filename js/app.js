@@ -1,83 +1,104 @@
 // js/app.js
 import { CONFIG } from '../config.js';
 
-// État global de l'application (AppState)
-window.appState = {
-    coords: CONFIG.defaultLocation,
-    address: CONFIG.defaultLocation.address,
-    climateLoaded: false
-};
+// --- VARIABLES GLOBALES DE LA CARTE ---
+let map, marker = null, polygonLayer = null, windLayerGroup = null; 
+let satelliteLayer, planLayer, cadastreLayer, reliefLayer, risquesLayer, inondationLayer, littoralLayer;
 
-// 1. Gestion des Onglets (Tabs)
-window.showTab = function(tabId) {
-    document.querySelectorAll('.tab-content').forEach(t => t.classList.add('hidden'));
-    document.getElementById(tabId).classList.remove('hidden');
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-        btn.classList.remove('border-emerald-600', 'text-emerald-600');
-        btn.classList.add('border-transparent', 'text-gray-500');
-    });
-    const activeBtn = document.querySelector(`[onclick="showTab('${tabId}')"]`);
-    if (activeBtn) activeBtn.classList.add('border-emerald-600', 'text-emerald-600');
-};
-
-// 2. Initialisation de la Carte
+// --- 1. INITIALISATION DE LA CARTE (Ton code restauré) ---
 window.initMap = function() {
-    console.log("Initialisation de la carte sur :", CONFIG.defaultLocation.address);
-    window.map = L.map('map').setView([CONFIG.defaultLocation.lat, CONFIG.defaultLocation.lng], CONFIG.defaultLocation.zoom);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors'
-    }).addTo(window.map);
+    if (typeof L === 'undefined') { setTimeout(window.initMap, 300); return; }
+    if (map) return; // Évite d'initialiser deux fois
 
-    window.marker = L.marker([CONFIG.defaultLocation.lat, CONFIG.defaultLocation.lng], { draggable: true }).addTo(window.map);
+    console.log("Initialisation de la carte sur :", CONFIG.defaultLocation.address);
+
+    // Centrage sur la France via la CONFIG
+    map = L.map('map', { zoomControl: false }).setView(
+        [CONFIG.defaultLocation.lat, CONFIG.defaultLocation.lng], 
+        CONFIG.defaultLocation.zoom
+    );
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+    // Couches (Layers)
+    satelliteLayer = L.tileLayer(
+        'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=HR.ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&FORMAT=image/jpeg&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}',
+        { maxZoom: 19 }
+    ).addTo(map);
+
+    planLayer = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17 });
+
+    reliefLayer = L.tileLayer(
+        'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW&STYLE=normal&FORMAT=image/png&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}',
+        { maxZoom: 19, maxNativeZoom: 13, opacity: 1, className: 'multiply-blend' }
+    );
+
+    cadastreLayer = L.tileLayer.wms('https://data.geopf.fr/wms-r/wms', {
+        layers: 'CADASTRALPARCELS.PARCELLAIRE_EXPRESS', format: 'image/png', transparent: true
+    }).addTo(map);
+
+    risquesLayer    = L.tileLayer.wms('https://mapsref.brgm.fr/wxs/georisques/risques', { layers: 'ALEARG',         format: 'image/png', transparent: true, opacity: 0.6 });
+    inondationLayer = L.tileLayer.wms('https://mapsref.brgm.fr/wxs/georisques/risques', { layers: 'inondations_zi', format: 'image/png', transparent: true, opacity: 0.6 });
+    littoralLayer   = L.tileLayer.wms('https://mapsref.brgm.fr/wxs/georisques/risques', { layers: 'PPRN',           format: 'image/png', transparent: true, opacity: 0.7 });
+
+    windLayerGroup = L.layerGroup().addTo(map);
     
-    window.marker.on('dragend', function(e) {
-        const pos = e.target.getLatLng();
-        updateLocation(pos.lat, pos.lng);
-    });
+    // Marqueur initial au centre de la France
+    marker = L.marker([CONFIG.defaultLocation.lat, CONFIG.defaultLocation.lng]).addTo(map);
 };
 
-// 3. Mise à jour de la localisation
-async function updateLocation(lat, lng, label = null) {
-    window.appState.coords = { lat, lng };
-    window.marker.setLatLng([lat, lng]);
-    window.map.panTo([lat, lng]);
-    
-    if (label) {
-        document.getElementById('addressSearch').value = label;
-        window.appState.address = label;
+// --- 2. CONTRÔLES DE LA CARTE (Ton code restauré pour les boutons HTML) ---
+window.changeBasemap = function(type) {
+    if (!map) return;
+    if (type === 'satellite') { map.hasLayer(planLayer) && map.removeLayer(planLayer); satelliteLayer.addTo(map); }
+    else                      { map.hasLayer(satelliteLayer) && map.removeLayer(satelliteLayer); planLayer.addTo(map); }
+    window.bringOverlaysToFront();
+};
+
+window.toggleLayer = function(name, checked) {
+    if (!map) return;
+    const layers = { cadastre: cadastreLayer, relief: reliefLayer, risques: risquesLayer, inondation: inondationLayer, littoral: littoralLayer, wind: windLayerGroup };
+    const l = layers[name]; if (!l) return;
+    checked ? l.addTo(map) : map.removeLayer(l);
+    window.bringOverlaysToFront();
+};
+
+window.bringOverlaysToFront = function() {
+    [reliefLayer, inondationLayer, littoralLayer, risquesLayer, cadastreLayer].forEach(l => {
+        if (l && map.hasLayer(l)) l.bringToFront();
+    });
+    if (polygonLayer && map.hasLayer(polygonLayer)) polygonLayer.bringToFront();
+};
+
+// --- 3. GESTION DES ONGLETS (Tabs) ---
+window.showTab = function(tabId) {
+    // Masque tout
+    document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.remove('active');
+        content.style.display = 'none';
+    });
+    // Affiche la cible
+    const target = document.getElementById(tabId);
+    if (target) {
+        target.classList.add('active');
+        target.style.display = 'block';
     }
-    console.log("Nouvelle position :", lat, lng);
-    // Ici, on pourra ajouter les appels API pour le climat et les risques
-}
+    // Met à jour les boutons
+    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+    const activeBtn = document.querySelector(`[data-target="${tabId}"]`);
+    if (activeBtn) activeBtn.classList.add('active');
+};
 
-// 4. Recherche d'adresse (Autocomplete simplifié)
-window.initAutocomplete = function() {
-    const input = document.getElementById('addressSearch');
-    if (!input) return;
-
-    input.addEventListener('input', async (e) => {
-        const query = e.target.value;
-        if (query.length < 4) return;
-        
-        try {
-            const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=fr`);
-            const data = await res.json();
-            // Pour simplifier ici, on prend le premier résultat
-            if (data && data.length > 0) {
-                const first = data[0];
-                updateLocation(parseFloat(first.lat), parseFloat(first.lon), first.display_name);
-            }
-        } catch (err) {
-            console.error("Erreur recherche adresse:", err);
+// --- 4. DÉMARRAGE DE L'APP ---
+export function startApp() {
+    window.initMap();
+    
+    // Branchement automatique des onglets
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        const target = btn.getAttribute('data-target');
+        if (target) {
+            btn.onclick = () => window.showTab(target);
         }
     });
-};
 
-// Lancement au démarrage
-window.startApp = function() {
-    window.initMap();
-    window.initAutocomplete();
-    window.showTab('tab-climat'); // Affiche l'onglet climat par défaut
-};
-
-export { updateLocation };
+    console.log("Moteur ÔVIVANT démarré avec succès !");
+}
